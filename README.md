@@ -7,4 +7,4 @@
 
  and almost GUI code are written by Gemini.
 
-core features are developed in https://github.com/Uliboooo/local_issues_lib
+core features are developed in [local_issues_lib](https://github.com/Uliboooo/local_issues_lib)
