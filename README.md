@@ -6,3 +6,5 @@
  > This Application is Pre-alpha
 
  and almost GUI code are written by Gemini.
+
+core features are developed in https://github.com/Uliboooo/local_issues_lib
