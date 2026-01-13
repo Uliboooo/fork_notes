@@ -78,6 +78,11 @@ struct TreeNotesApp {
     import_tx: Option<Sender<TreeNotesApp>>,
     #[serde(skip)]
     show_about: bool,
+
+    #[serde(skip)]
+    last_auto_save: f64,
+    #[serde(skip)]
+    last_save_time: f64,
 }
 
 impl Default for TreeNotesApp {
@@ -106,6 +111,8 @@ impl Default for TreeNotesApp {
             import_rx: Some(rx),
             import_tx: Some(tx),
             show_about: false,
+            last_auto_save: 0.0,
+            last_save_time: 0.0,
         }
     }
 }
@@ -122,7 +129,7 @@ impl TreeNotesApp {
         Some(data_dir.join("tree_notes").join("data.json"))
     }
 
-    fn save_to_disk(&self) {
+    fn save_to_disk(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Ok(json) = serde_json::to_string(self) {
             if let Some(path) = Self::get_data_path() {
@@ -408,8 +415,11 @@ impl eframe::App for TreeNotesApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        if trigger_save {
+        let current_time = ctx.input(|i| i.time);
+        if trigger_save || (current_time - self.last_auto_save > 30.0) {
             self.save_to_disk();
+            self.last_auto_save = current_time;
+            self.last_save_time = current_time;
         }
 
         if trigger_import && let Some(tx) = self.import_tx.clone() {
@@ -856,6 +866,20 @@ impl eframe::App for TreeNotesApp {
                 });
             }
         });
+
+        // --- 6. Status Indicator ---
+        let current_time = ctx.input(|i| i.time);
+        if current_time - self.last_save_time < 2.0 {
+            egui::Area::new(egui::Id::new("save_indicator"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0])
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .inner_margin(5.0)
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Saved").color(egui::Color32::GREEN));
+                        });
+                });
+        }
     }
 }
 
