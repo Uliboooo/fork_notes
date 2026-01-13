@@ -76,6 +76,8 @@ struct TreeNotesApp {
     import_rx: Option<Receiver<TreeNotesApp>>,
     #[serde(skip)]
     import_tx: Option<Sender<TreeNotesApp>>,
+    #[serde(skip)]
+    show_about: bool,
 }
 
 impl Default for TreeNotesApp {
@@ -103,6 +105,7 @@ impl Default for TreeNotesApp {
             current_user,
             import_rx: Some(rx),
             import_tx: Some(tx),
+            show_about: false,
         }
     }
 }
@@ -117,6 +120,18 @@ impl TreeNotesApp {
             std::path::PathBuf::from(home).join(".local").join("share")
         };
         Some(data_dir.join("tree_notes").join("data.json"))
+    }
+
+    fn save_to_disk(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(json) = serde_json::to_string(self) {
+            if let Some(path) = Self::get_data_path() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, json);
+            }
+        }
     }
 
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -201,19 +216,13 @@ impl TreeNotesApp {
 impl eframe::App for TreeNotesApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if let Ok(json) = serde_json::to_string(self) {
-            storage.set_string(eframe::APP_KEY, json.clone());
-
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(path) = TreeNotesApp::get_data_path() {
-                if let Some(parent) = path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::write(path, json);
-            }
+            storage.set_string(eframe::APP_KEY, json);
+            self.save_to_disk();
         }
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // --- 0. Handle Async Data Import ---
         if let Some(rx) = &self.import_rx
             && let Ok(new_app) = rx.try_recv()
         {
@@ -224,7 +233,286 @@ impl eframe::App for TreeNotesApp {
             self.selected_issue_index = None;
         }
 
-        // --- User Manager Window ---
+        // --- 1. Keybindings & Action Flags ---
+        let mut trigger_import = false;
+        let mut trigger_export = false;
+        let mut trigger_save = false;
+        let mut trigger_exit = false;
+
+        let mut trigger_new_issue_focus = false;
+        let mut trigger_comment_focus = false; // "Add a comment"
+        let mut trigger_search_focus = false;
+        let mut trigger_comment_submit = false; // "Comment" action
+
+        let mut trigger_fork = false;
+        let mut trigger_close_cmp = false;
+        let mut trigger_close_not_planned = false;
+
+        // IDs for focus
+        let new_issue_id = egui::Id::new("new_issue_input");
+        let search_id = egui::Id::new("search_input");
+        let comment_id = egui::Id::new("comment_input");
+
+        // Check Keybinds
+        ctx.input(|i| {
+            if i.modifiers.command {
+                if i.key_pressed(egui::Key::N) {
+                    trigger_new_issue_focus = true;
+                }
+                if i.key_pressed(egui::Key::S) {
+                    trigger_save = true;
+                }
+                if i.key_pressed(egui::Key::E) {
+                    trigger_export = true;
+                }
+                if i.key_pressed(egui::Key::I) {
+                    trigger_import = true;
+                }
+                if i.key_pressed(egui::Key::F) {
+                    trigger_fork = true;
+                }
+                if i.key_pressed(egui::Key::O) {
+                    trigger_close_cmp = true;
+                }
+                if i.key_pressed(egui::Key::P) {
+                    trigger_close_not_planned = true;
+                }
+                if i.key_pressed(egui::Key::A) {
+                    trigger_comment_focus = true;
+                }
+                // Ctrl+Enter for comment submit (only if comment box is focused check later or global?)
+                // The request says "when focused comment box".
+                // We can check if comment box is focused using memory.
+            }
+        });
+
+        // Ctrl+Enter check for comment submit (context sensitive)
+        if ctx.memory(|m| m.has_focus(comment_id))
+            && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
+        {
+            trigger_comment_submit = true;
+        }
+
+        // --- 2. Menu Bar ---
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Save").clicked() {
+                        trigger_save = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Export as Json").clicked() {
+                        trigger_export = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Import from Json").clicked() {
+                        trigger_import = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Manage Users").clicked() {
+                        self.show_user_manager = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Exit").clicked() {
+                        trigger_exit = true;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Issue", |ui| {
+                    if ui.button("New Issue").clicked() {
+                        trigger_new_issue_focus = true;
+                        ui.close_menu();
+                    }
+                    ui.menu_button("Close Issue", |ui| {
+                        if ui.button("Close as completed").clicked() {
+                            trigger_close_cmp = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("Close as Not Planned").clicked() {
+                            trigger_close_not_planned = true;
+                            ui.close_menu();
+                        }
+                    });
+                    if ui.button("Fork this issue").clicked() {
+                        trigger_fork = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Go to Comment").clicked() {
+                        trigger_comment_focus = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Comment").clicked() {
+                        trigger_comment_submit = true;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui.button("Dark Mode").clicked() {
+                        ctx.set_visuals(egui::Visuals::dark());
+                        ui.close_menu();
+                    }
+                    ui.menu_button("Filter", |ui| {
+                        if ui
+                            .selectable_value(&mut self.filter_status, FilterStatus::Open, "Open")
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                        if ui
+                            .selectable_value(
+                                &mut self.filter_status,
+                                FilterStatus::Completed,
+                                "Completed",
+                            )
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                        if ui
+                            .selectable_value(
+                                &mut self.filter_status,
+                                FilterStatus::NotPlanned,
+                                "Not Planned",
+                            )
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                        if ui
+                            .selectable_value(&mut self.filter_status, FilterStatus::All, "All")
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                    });
+                    if ui.button("Search").clicked() {
+                        trigger_search_focus = true;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About").clicked() {
+                        self.show_about = true;
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+
+        // --- 3. Execute Actions ---
+
+        if trigger_exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        if trigger_save {
+            self.save_to_disk();
+        }
+
+        if trigger_import && let Some(tx) = self.import_tx.clone() {
+            #[cfg(target_arch = "wasm32")]
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Some(file) = rfd::AsyncFileDialog::new().pick_file().await {
+                    let data = file.read().await;
+                    if let Ok(app) = serde_json::from_slice::<TreeNotesApp>(&data) {
+                        let _ = tx.send(app);
+                    }
+                }
+            });
+
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().pick_file()
+                    && let Ok(content) = std::fs::read_to_string(path)
+                    && let Ok(app) = serde_json::from_str::<TreeNotesApp>(&content)
+                {
+                    let _ = tx.send(app);
+                }
+            });
+        }
+
+        if trigger_export && let Ok(json) = serde_json::to_string_pretty(self) {
+            #[cfg(target_arch = "wasm32")]
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Some(handle) = rfd::AsyncFileDialog::new()
+                    .set_file_name("tree_notes_export.json")
+                    .save_file()
+                    .await
+                {
+                    let _ = handle.write(json.as_bytes()).await;
+                }
+            });
+
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_file_name("tree_notes_export.json")
+                    .save_file()
+                {
+                    let _ = std::fs::write(path, json);
+                }
+            });
+        }
+
+        if trigger_new_issue_focus {
+            ctx.memory_mut(|m| m.request_focus(new_issue_id));
+        }
+
+        if trigger_search_focus {
+            ctx.memory_mut(|m| m.request_focus(search_id));
+        }
+
+        if trigger_comment_focus {
+            ctx.memory_mut(|m| m.request_focus(comment_id));
+        }
+
+        if let Some(id) = self.selected_issue_index {
+            if trigger_fork {
+                 if let Some(new_id) = self.issues.fork(id) {
+                    self.filter_status = FilterStatus::All;
+                    self.selected_issue_index = Some(new_id);
+                }
+            }
+            if trigger_close_cmp {
+                if let Some(target) = self.issues.get_mut(id) {
+                    target.close_as_cmp();
+                }
+            }
+            if trigger_close_not_planned {
+                if let Some(target) = self.issues.get_mut(id) {
+                    target.close_as_not_planed();
+                }
+            }
+
+            if trigger_comment_submit {
+                let draft_text = self.comment_drafts.entry(id).or_default();
+                if !draft_text.is_empty() {
+                    if let Some(target_issue) = self.issues.get_mut(id) {
+                        target_issue.comment(Comment::new(
+                            draft_text.clone(),
+                            self.current_user.clone(),
+                        ));
+                        draft_text.clear();
+                    }
+                }
+            }
+        }
+
+        // --- 4. Render Windows ---
+
+        if self.show_about {
+            egui::Window::new("About Tree Notes")
+                .open(&mut self.show_about)
+                .show(ctx, |ui| {
+                    ui.label("Tree Notes");
+                    ui.label(format!("Version: {}", env!("CARGO_PKG_VERSION")));
+                    ui.label("A local-first issue tracker.");
+                });
+        }
+
         if self.show_user_manager {
             egui::Window::new("User Manager")
                 .open(&mut self.show_user_manager)
@@ -264,71 +552,14 @@ impl eframe::App for TreeNotesApp {
                 });
         }
 
-        // --- Top Panel ---
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Tree Notes Issue Tracker")
-                        .strong()
-                        .size(16.0),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Import").clicked()
-                        && let Some(tx) = self.import_tx.clone()
-                    {
-                        #[cfg(target_arch = "wasm32")]
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Some(file) = rfd::AsyncFileDialog::new().pick_file().await {
-                                let data = file.read().await;
-                                if let Ok(app) = serde_json::from_slice::<TreeNotesApp>(&data) {
-                                    let _ = tx.send(app);
-                                }
-                            }
-                        });
+        // --- 5. Main Panels ---
 
-                        #[cfg(not(target_arch = "wasm32"))]
-                        std::thread::spawn(move || {
-                            if let Some(path) = rfd::FileDialog::new().pick_file()
-                                && let Ok(content) = std::fs::read_to_string(path)
-                                && let Ok(app) = serde_json::from_str::<TreeNotesApp>(&content)
-                            {
-                                let _ = tx.send(app);
-                            }
-                        });
-                    }
-
-                    if ui.button("Export").clicked()
-                        && let Ok(json) = serde_json::to_string_pretty(self)
-                    {
-                        #[cfg(target_arch = "wasm32")]
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Some(handle) = rfd::AsyncFileDialog::new()
-                                .set_file_name("tree_notes_export.json")
-                                .save_file()
-                                .await
-                            {
-                                let _ = handle.write(json.as_bytes()).await;
-                            }
-                        });
-
-                        #[cfg(not(target_arch = "wasm32"))]
-                        std::thread::spawn(move || {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .set_file_name("tree_notes_export.json")
-                                .save_file()
-                            {
-                                let _ = std::fs::write(path, json);
-                            }
-                        });
-                    }
-
-                    if ui.button("Manage Users").clicked() {
-                        self.show_user_manager = true;
-                    }
-                    ui.label(format!("User: {}", self.current_user.name()));
-                });
-            });
-        });
+        // Note: Top panel is already handled by Menu Bar.
+        // We might want to keep the "User: xxxx" info somewhere.
+        // Maybe in the menu bar right side?
+        // Let's add it to the menu bar.
+        // "Right aligned" content in menu bar is tricky but possible with with_layout.
+        // Alternatively, use a BottomPanel for status or just append to menu bar.
 
         // --- Left Side Panel (Issue List) ---
         egui::SidePanel::left("issue_list_panel")
@@ -339,7 +570,9 @@ impl eframe::App for TreeNotesApp {
 
                 // New Issue Input
                 ui.horizontal(|ui| {
-                    let response = ui.text_edit_singleline(&mut self.new_description);
+                    let response = ui.add(
+                         egui::TextEdit::singleline(&mut self.new_description).id(new_issue_id)
+                    );
                     if (ui.button("New").clicked()
                         || (response.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))))
@@ -381,8 +614,8 @@ impl eframe::App for TreeNotesApp {
 
                 // Search UI (Enhanced)
                 ui.horizontal(|ui| {
-                    ui.label("Search:"); // Add Title
-                    ui.text_edit_singleline(&mut self.query);
+                    ui.label("Search:");
+                    ui.add(egui::TextEdit::singleline(&mut self.query).id(search_id));
                 });
 
                 ui.separator();
@@ -463,6 +696,7 @@ impl eframe::App for TreeNotesApp {
                                 )
                                 .weak(),
                             );
+                            ui.label(format!("User: {}", self.current_user.name()));
 
                             ui.add_space(10.0);
 
@@ -537,8 +771,9 @@ impl eframe::App for TreeNotesApp {
                                     let draft_text = self.comment_drafts.entry(id).or_default();
                                     ui.add(
                                         egui::TextEdit::multiline(draft_text)
+                                            .id(comment_id)
                                             .desired_width(f32::INFINITY)
-                                            .hint_text("Leave a comment"),
+                                            .hint_text("Leave a comment (Ctrl+Enter to submit)"),
                                     );
 
                                     ui.add_space(5.0);
