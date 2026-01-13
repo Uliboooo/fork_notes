@@ -18,6 +18,7 @@ mkdir -p ${NEWPATH}
 cargo build --release &&\
 cp ./target/release/fork_notes "${NEWPATH}/fork_notes" &&\
 cp ./fork_notes.desktop "${NEWPATH}/fork_notes.desktop" &&\
+cp ./assets/icon.svg "${NEWPATH}/icon.svg" &&\
 cp ./install.sh "${NEWPATH}/install.sh" &&\
 (
   cd "${RELEASE_DIR}"
