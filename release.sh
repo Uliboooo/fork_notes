@@ -22,7 +22,7 @@ cp ./assets/icon.svg "${NEWPATH}/icon.svg" &&\
 cp ./install.sh "${NEWPATH}/install.sh" &&\
 (
   cd "${RELEASE_DIR}"
-  zip -r "${TAG}.zip" "${TAG}"
+  zip -r "ForkNotes_${TAG}.zip" "${TAG}"
 )
 
 rm -rf "${NEWPATH}"
