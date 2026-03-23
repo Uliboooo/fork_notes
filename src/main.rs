@@ -144,6 +144,11 @@ impl TreeNotesApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::setup_custom_fonts(&cc.egui_ctx);
 
+        // Widen the resize grab zone so the panel separator is easier to drag
+        cc.egui_ctx.style_mut(|s| {
+            s.interaction.resize_grab_radius_side = 8.0;
+        });
+
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = Self::get_data_path() {
             if path.exists() {
@@ -575,6 +580,7 @@ impl eframe::App for TreeNotesApp {
         egui::SidePanel::left("issue_list_panel")
             .resizable(true)
             .default_width(250.0)
+            .min_width(150.0)
             .show(ctx, |ui| {
                 ui.add_space(5.0);
 
